@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en-US">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1c1c19">
+  <meta name="description" content="A first-person demolition game. Explore a 3D apartment and smash walls, furniture, and fixtures with a sledgehammer.">
+  <title>Wrecking Room</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body class="is-loading">
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 5 12 7-12 7Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14m6-14v14"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-2 8m2-8V4m0 6h-6"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4Zm12 0a4 4 0 0 1 0 6m2-8a7 7 0 0 1 0 10"/></symbol>
+    <symbol id="i-muted" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4Zm12 1 5 5m0-5-5 5"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><path d="M3.5 7.5 9 4l6 3.5L20.5 4v12.5L15 20l-6-3.5L3.5 20V7.5ZM9 4v12.5m6-9V20"/></symbol>
+    <symbol id="i-hammer" viewBox="0 0 24 24"><path d="m4 20 8.5-8.5m-5-4L11 4l8 8-3.5 3.5-8-8Zm5.2-1.7 2.8-2.8L22 9.5l-2.8 2.8"/></symbol>
+    <symbol id="i-mouse" viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 3v6"/></symbol>
+    <symbol id="i-look" viewBox="0 0 24 24"><path d="M2.5 12s3.5-5 9.5-5 9.5 5 9.5 5-3.5 5-9.5 5-9.5-5-9.5-5Z"/><circle cx="12" cy="12" r="2"/></symbol>
+    <symbol id="i-stick" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-corner" viewBox="0 0 24 24"><path d="M4 10V4h6m10 10v6h-6"/></symbol>
+  </svg>
+
+  <main class="viewport" aria-label="3D apartment">
+    <canvas id="scene" aria-label="First-person view" tabindex="-1"></canvas>
+  </main>
+  <div class="screen-shade" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <img class="brand-logo" src="./brand-logo.png" width="488" height="670" alt="Real Estate Makeover Co" draggable="false">
+    <div class="header-actions">
+      <button id="sound" class="icon-button" type="button" aria-label="Sound" aria-pressed="true" title="Sound">
+        <svg class="volume-on" aria-hidden="true"><use href="#i-volume"/></svg>
+        <svg class="volume-off" aria-hidden="true"><use href="#i-muted"/></svg>
+      </button>
+      <button id="pause" class="icon-button" type="button" aria-label="Pause" title="Pause">
+        <svg aria-hidden="true"><use href="#i-pause"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div id="hud" class="hud" aria-label="Game interface">
+    <div class="room-indicator">
+      <span class="room-indicator-line" aria-hidden="true"></span>
+      <span id="room-name">Living room</span>
+    </div>
+
+    <div class="map-widget">
+      <button id="map-toggle" class="icon-button map-toggle" type="button" aria-label="Floor plan" aria-controls="minimap" aria-expanded="false" title="Floor plan">
+        <svg aria-hidden="true"><use href="#i-map"/></svg>
+      </button>
+      <section id="minimap" class="minimap" aria-label="Floor plan">
+        <div class="map-title"><span>Floor plan</span><span class="north-mark" aria-label="North">↑ N</span></div>
+        <svg class="plan-map" viewBox="-0.55 -0.55 15.9 10.4" role="img" aria-label="Apartment layout and player location">
+          <path class="map-floor" d="M2.95 0H14.78V9.30H0V4.8H2.95Z"/>
+          <path class="map-tile" d="M7.10 0h3.02v2.7H7.10z M2.95 3.45h2.77v1.77H2.95z"/>
+          <path class="map-grid" d="M1.5 4.80v4.5m2-9.3v9.3m2-9.3v9.3m2-9.3v9.3m2-9.3v9.3m2-9.3v9.3m2-9.3v9.3M2.95 1.5h11.83M2.95 3.5h11.83M0 5.5h14.78M0 7.5h14.78"/>
+          <path class="map-outer" d="M2.95 0H14.78V9.30H0V4.8H2.95Z"/>
+          <path class="map-wall" d="M7.10 0v2.70h.72m.97 0h1.33m0-2.7v4.10m0 .85v.42m0 .82v.73h-.96m.96-1.77h4.66M2.95 3.45h2.77v1.77m-2.77-.42v.42h.63m.86 0h2.76m.94 0h.10v1.7h.92V9.3"/>
+          <path class="map-window" d="M3.61 0h1.08m10.09.72v2.23m0 3.05v2.24M0 5.02V6.1"/>
+          <g id="map-player" transform="translate(12.3 4.2)" aria-hidden="true">
+            <circle class="map-radar" r="0.49"/>
+            <circle class="map-dot" r="0.195"/>
+            <path id="map-heading" d="M0-.76.177-.4H-.177Z"/>
+          </g>
+        </svg>
+        <div class="map-note"><span aria-hidden="true"></span>You are here</div>
+      </section>
+    </div>
+
+    <div id="crosshair" class="crosshair" aria-hidden="true"><i></i></div>
+    <div id="target-label" class="target-label"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <div class="quick-controls desktop-only" aria-label="Controls">
+      <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><small>Move</small></span>
+      <span><svg aria-hidden="true"><use href="#i-mouse"/></svg><small>Look</small></span>
+      <span><kbd>LMB</kbd><small>Swing</small></span>
+      <span><kbd>Esc</kbd><small>Pause</small></span>
+    </div>
+
+    <div class="session-stats" aria-label="Stats">
+      <div class="stat"><span id="hits">0</span><span>Swings</span></div>
+      <div class="stat"><span id="broken">0</span><span>Broken</span></div>
+    </div>
+
+    <div class="touch-controls mobile-only" aria-label="Touch controls">
+      <div id="look-zone" aria-label="Swipe to look around"></div>
+      <div id="joystick" class="joystick" aria-label="Movement joystick">
+        <span class="joystick-marks" aria-hidden="true"></span><span id="joystick-knob" class="joystick-knob"></span>
+      </div>
+      <button id="strike" class="strike" type="button" aria-label="Swing the sledgehammer"><svg aria-hidden="true"><use href="#i-hammer"/></svg><span>Swing</span></button>
+    </div>
+  </div>
+
+  <section id="intro" class="intro" aria-labelledby="intro-title">
+    <div class="intro-panel">
+      <img class="intro-brand" src="./brand-logo.png" width="488" height="670" alt="Real Estate Makeover Co" draggable="false">
+      <div class="intro-content">
+        <h1 id="intro-title">Wrecking Room<span aria-hidden="true">.</span></h1>
+        <p class="intro-tagline">Breaking things is the easy part.</p>
+        <p id="intro-description" class="intro-description">Explore the apartment and smash walls, furniture, and fixtures with a sledgehammer.</p>
+
+        <div class="intro-instructions desktop-only" aria-label="Controls">
+          <div><span class="instruction-icon"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>Move</span></div>
+          <div><span class="instruction-icon"><svg aria-hidden="true"><use href="#i-mouse"/></svg></span><span>Look around</span></div>
+          <div><span class="instruction-icon"><kbd>Click</kbd></span><span>Swing</span></div>
+          <div><span class="instruction-icon"><kbd>Esc</kbd></span><span>Pause</span></div>
+        </div>
+        <div class="intro-instructions mobile-only" aria-label="Controls">
+          <div><span class="instruction-icon"><svg aria-hidden="true"><use href="#i-stick"/></svg></span><span>Move with the joystick</span></div>
+          <div><span class="instruction-icon"><svg aria-hidden="true"><use href="#i-look"/></svg></span><span>Swipe on the right to look</span></div>
+          <div><span class="instruction-icon"><svg aria-hidden="true"><use href="#i-hammer"/></svg></span><span>Tap the button to swing</span></div>
+        </div>
+
+        <div class="intro-actions">
+          <button id="start" class="start" type="button"><span>Enter the apartment</span><svg aria-hidden="true"><use href="#i-arrow"/></svg></button>
+          <button id="restart" class="restart" type="button"><svg aria-hidden="true"><use href="#i-reset"/></svg><span>Restart</span></button>
+        </div>
+        <p id="loading-error" class="loading-error" role="alert" hidden></p>
+      </div>
+    </div>
+  </section>
+  <script type="module" src="./game.js"></script>
+</body>
+</html>
