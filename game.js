@@ -13,8 +13,67 @@ const body=document.body;
 body.classList.toggle('is-touch',touch);
 main.disabled=true;
 
+function makeEdgeFilter(renderer) {
+  if (renderer.getContext().getContextAttributes()?.antialias) return null;
+
+  const target=new THREE.WebGLRenderTarget(1,1,{
+    type:renderer.extensions.has('EXT_color_buffer_float') ? THREE.HalfFloatType : THREE.UnsignedByteType
+  });
+  const uniforms={frame:{value:target.texture},texel:{value:new THREE.Vector2(1,1)}};
+  const material=new THREE.ShaderMaterial({
+    uniforms,depthTest:false,depthWrite:false,
+    vertexShader:`varying vec2 vUv;
+      void main() { vUv=uv; gl_Position=vec4(position.xy,0.,1.); }`,
+    fragmentShader:`uniform sampler2D frame;
+      uniform vec2 texel;
+      varying vec2 vUv;
+      float luma(vec3 color) { return dot(color,vec3(.299,.587,.114)); }
+      void main() {
+        vec3 center=texture2D(frame,vUv).rgb;
+        float nw=luma(texture2D(frame,vUv+texel*vec2(-1.,1.)).rgb);
+        float ne=luma(texture2D(frame,vUv+texel).rgb);
+        float sw=luma(texture2D(frame,vUv-texel).rgb);
+        float se=luma(texture2D(frame,vUv+texel*vec2(1.,-1.)).rgb);
+        float middle=luma(center);
+        float darkest=min(middle,min(min(nw,ne),min(sw,se)));
+        float lightest=max(middle,max(max(nw,ne),max(sw,se)));
+        vec3 result=center;
+        if(lightest-darkest>max(.012,lightest*.11)) {
+          vec2 direction=vec2(sw+se-nw-ne,nw+sw-ne-se);
+          float reduction=max((nw+ne+sw+se)*.03125,.0078125);
+          float scale=1./(min(abs(direction.x),abs(direction.y))+reduction);
+          direction=clamp(direction*scale,vec2(-7.),vec2(7.))*texel;
+          vec3 soft=.5*(texture2D(frame,vUv-direction/6.).rgb+texture2D(frame,vUv+direction/6.).rgb);
+          vec3 wide=.5*soft+.25*(texture2D(frame,vUv-direction*.5).rgb+texture2D(frame,vUv+direction*.5).rgb);
+          float wideLuma=luma(wide);
+          result=(wideLuma<darkest||wideLuma>lightest)?soft:wide;
+        }
+        gl_FragColor=vec4(result,1.);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`
+  });
+  const screen=new THREE.Scene();
+  const quad=new THREE.Mesh(new THREE.PlaneGeometry(2,2),material);
+  quad.frustumCulled=false;
+  screen.add(quad);
+  const camera=new THREE.Camera();
+  return {
+    target,
+    resize(){
+      const {x,y}=renderer.getDrawingBufferSize(new THREE.Vector2());
+      target.setSize(x,y);
+      uniforms.texel.value.set(1/x,1/y);
+    },
+    present(){
+      renderer.setRenderTarget(null);
+      renderer.render(screen,camera);
+    }
+  };
+}
+
 try {
-  const renderer=new THREE.WebGLRenderer({canvas,antialias:!touch,powerPreference:'high-performance',alpha:false});
+  const renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance',alpha:false});
   renderer.setClearColor(0xa4b0b0);
   renderer.outputColorSpace=THREE.SRGBColorSpace;
   renderer.toneMapping=THREE.ACESFilmicToneMapping;
@@ -23,6 +82,7 @@ try {
   renderer.shadowMap.type=THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate=false;
   renderer.autoClear=false;
+  const edgeFilter=makeEdgeFilter(renderer);
 
   const scene=new THREE.Scene();
   scene.background=new THREE.Color(0xc6d7dd);
@@ -67,9 +127,10 @@ try {
   const movement=new THREE.Vector2();
   const velocity=new THREE.Vector2();
   const stick=new THREE.Vector2();
-  let stickPointer=null,lookPointer=null,dragPointer=null,mouseLook='lock';
-  let prevLookX=0,prevLookY=0,dragTravel=0;
-  let playing=false,hitDone=false,mapOpen=false;
+  let stickPointer=null,lookPointer=null,mouseLook='lock';
+  let prevLookX=0,prevLookY=0;
+  let mouseX=null,mouseY=null,edgeTurn=0;
+  let playing=false,hitDone=false;
   let yaw=0,pitch=0,bob=0,stepPhase=0,foot=false,swing=-1,shake=0;
   let hits=0,broken=0,toastUntil=0,flashUntil=0,previous=performance.now(),aimTime=0;
   let targeted=null;
@@ -93,6 +154,7 @@ try {
     const pixels=Math.min(touch?1.5:1.7,devicePixelRatio||1);
     renderer.setPixelRatio(pixels);
     renderer.setSize(w,h,false);
+    edgeFilter?.resize();
     camera.aspect=w/h;
     camera.fov=layoutFov();
     camera.updateProjectionMatrix();
@@ -139,19 +201,12 @@ try {
   function setControlsOff() {
     keys.clear();
     velocity.set(0,0);stick.set(0,0);
-    stickPointer=lookPointer=dragPointer=null;
+    stickPointer=lookPointer=null;
+    mouseX=mouseY=null;edgeTurn=0;
     knob.style.removeProperty('--stick-x');knob.style.removeProperty('--stick-y');
     joystick.classList.remove('is-active');
     targeted=null;setCrosshair();
-    setMap(false);
   }
-
-  function setMap(open) {
-    mapOpen=open;
-    body.classList.toggle('map-open',open);
-    $('map-toggle').setAttribute('aria-expanded',String(open));
-  }
-  $('map-toggle').addEventListener('click',()=>setMap(!mapOpen));
 
   function pause() {
     if(!playing) return;
@@ -167,10 +222,10 @@ try {
     viewportDirty=true;
   }
 
-  function dragFallback() {
+  function enableFreeLook() {
     if (!playing||touch||document.pointerLockElement===canvas) return;
-    mouseLook='drag';
-    message('Click and drag to look around',2900);
+    mouseLook='free';
+    mouseX=mouseY=null;edgeTurn=0;
   }
 
   function play() {
@@ -183,9 +238,9 @@ try {
     if(!touch) {
       mouseLook='lock';
       try {
-        if (!canvas.requestPointerLock) dragFallback();
-        else canvas.requestPointerLock()?.catch(dragFallback);
-      } catch {dragFallback();}
+        if (!canvas.requestPointerLock) enableFreeLook();
+        else canvas.requestPointerLock()?.catch(enableFreeLook);
+      } catch {enableFreeLook();}
     }
   }
 
@@ -213,7 +268,7 @@ try {
       message('');
     } else if (mouseLook==='lock'&&playing) pause();
   });
-  document.addEventListener('pointerlockerror',dragFallback);
+  document.addEventListener('pointerlockerror',enableFreeLook);
   addEventListener('blur',()=>{if(!touch)pause();});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)pause();});
   canvas.addEventListener('contextmenu',e=>e.preventDefault());
@@ -267,27 +322,22 @@ try {
     if (playing&&document.pointerLockElement===canvas) look(event.movementX,event.movementY,.00215);
   });
   document.addEventListener('mousedown',event=>{
-    if (playing&&document.pointerLockElement===canvas&&event.button===0) {
+    const canSwing=document.pointerLockElement===canvas||(mouseLook==='free'&&event.target===canvas);
+    if (playing&&!touch&&canSwing&&event.button===0) {
       event.preventDefault();startSwing();
     }
   });
 
-  canvas.addEventListener('pointerdown',event=>{
-    if(!playing||touch||mouseLook!=='drag'||event.button!==0) return;
-    dragPointer=event.pointerId;
-    prevLookX=event.clientX;prevLookY=event.clientY;dragTravel=0;
-    canvas.setPointerCapture(dragPointer);
+  canvas.addEventListener('mousemove',event=>{
+    if(!playing||touch||mouseLook!=='free'||document.pointerLockElement===canvas) return;
+    if(mouseX!==null) look(event.clientX-mouseX,event.clientY-mouseY,.0047);
+    mouseX=event.clientX;mouseY=event.clientY;
+    const rect=canvas.getBoundingClientRect();
+    const left=mouseX-rect.left,right=rect.right-mouseX;
+    edgeTurn=(Math.max(0,20-right)-Math.max(0,20-left))/20;
   });
-  canvas.addEventListener('pointermove',event=>{
-    if(dragPointer!==event.pointerId) return;
-    const dx=event.clientX-prevLookX,dy=event.clientY-prevLookY;
-    dragTravel+=Math.abs(dx)+Math.abs(dy);
-    look(dx,dy,.0047);prevLookX=event.clientX;prevLookY=event.clientY;
-  });
-  for (const type of ['pointerup','pointercancel','lostpointercapture']) canvas.addEventListener(type,event=>{
-    if(dragPointer!==event.pointerId) return;
-    dragPointer=null;
-    if(type==='pointerup'&&dragTravel<5)startSwing();
+  canvas.addEventListener('mouseleave',()=>{
+    mouseX=mouseY=null;edgeTurn=0;
   });
 
   function joystickMove(event) {
@@ -334,6 +384,7 @@ try {
     if(!playing&&!viewportDirty) return;
     viewportDirty=false;
     if(playing) {
+      if(mouseLook==='free'&&edgeTurn) look(edgeTurn,0,dt*.83);
       movement.set(
         Number(keys.has('KeyD')||keys.has('ArrowRight'))-Number(keys.has('KeyA')||keys.has('ArrowLeft'))+stick.x,
         Number(keys.has('KeyS')||keys.has('ArrowDown'))-Number(keys.has('KeyW')||keys.has('ArrowUp'))+stick.y);
@@ -375,10 +426,12 @@ try {
     if (playing&&swing>=swingContact&&!hitDone) impact(now);
     if (playing&&now>=aimTime) {targeted=world.aim(camera);setCrosshair();aimTime=now+75;}
     hammer.update(t,bob,swing);
+    if(edgeFilter) renderer.setRenderTarget(edgeFilter.target);
     renderer.clear();
     renderer.render(scene,camera);
     renderer.clearDepth();
     renderer.render(hammer.scene,hammer.camera);
+    edgeFilter?.present();
   }
   renderer.shadowMap.needsUpdate=true;
   setLocation();setStats();requestAnimationFrame(render);
