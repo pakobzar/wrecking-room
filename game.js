@@ -3,21 +3,84 @@ import {makeEffects,makeSound} from './effects.js';
 import {makeHammer,swingDuration,swingDrive,swingContact} from './hammer.js';
 
 const $ = id=>document.getElementById(id);
-const canvas=$('scene');
+let canvas=$('scene');
 const main=$('start'),title=$('intro-title'),description=$('intro-description'),restart=$('restart');
 const hitCount=$('hits'),brokenCount=$('broken'),mapPlayer=$('map-player'),roomName=$('room-name');
 const joystick=$('joystick'),knob=$('joystick-knob'),lookZone=$('look-zone'),strike=$('strike');
 const crosshair=$('crosshair'),targetLabel=$('target-label'),toast=$('toast'),error=$('loading-error');
-const touch=new URLSearchParams(location.search).get('touch')==='1' || matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints>0 && matchMedia('(hover: none)').matches);
+const params=new URLSearchParams(location.search);
+const appleMobile=/iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const touch=params.get('touch')==='1' || appleMobile || matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints>0 && matchMedia('(hover: none)').matches);
 const body=document.body;
+const startLabel=main.querySelector('span');
+let retryGraphics=false;
 body.classList.toggle('is-touch',touch);
 main.disabled=true;
 
-function makeEdgeFilter(renderer) {
+class GraphicsUnavailable extends Error {}
+
+function showGraphicsError(message) {
+  body.classList.remove('is-loading');
+  error.textContent=message;
+  error.hidden=false;
+  startLabel.textContent='Retry graphics';
+  retryGraphics=true;
+  main.disabled=false;
+}
+
+function readyGraphics() {
+  body.classList.remove('is-loading');
+  error.hidden=true;
+  startLabel.textContent=body.classList.contains('is-paused')?'Resume':'Enter the apartment';
+  retryGraphics=false;
+  main.disabled=false;
+}
+
+main.addEventListener('click',event=>{
+  if(!retryGraphics) return;
+  event.stopImmediatePropagation();
+  const safeURL=new URL(location.href);
+  safeURL.searchParams.set('graphics','basic');
+  if(safeURL.href===location.href) location.reload();
+  else location.replace(safeURL.href);
+});
+
+function createGraphics() {
+  const standard={antialias:true,alpha:false,powerPreference:'high-performance',ratio:touch?1.5:1.7,shadow:touch?1536:2048,filter:true};
+  // Keep the backing buffers and shadow map small on mobile WebKit.
+  const reduced={antialias:false,alpha:false,powerPreference:'default',ratio:1.2,shadow:768,filter:true};
+  const basic={antialias:false,alpha:true,powerPreference:'default',ratio:1,shadow:0,filter:false};
+  const profiles=params.get('graphics')==='basic'?[basic]:[appleMobile?reduced:standard,basic];
+  let lastError;
+  for(const profile of profiles) {
+    const options={antialias:profile.antialias,alpha:profile.alpha,powerPreference:profile.powerPreference};
+    let context;
+    try {
+      context=canvas.getContext('webgl2',options);
+      if(!context || context.isContextLost() || !context.getContextAttributes()) {
+        throw new GraphicsUnavailable('Could not acquire a usable WebGL 2 context.');
+      }
+      const renderer=new THREE.WebGLRenderer({canvas,context,...options});
+      if(context.isContextLost()) throw new GraphicsUnavailable('WebGL 2 was lost during setup.');
+      return {renderer,context,profile};
+    } catch(cause) {
+      if(!lastError || !(cause instanceof GraphicsUnavailable)) lastError=cause;
+      if(profile===profiles[profiles.length-1]) break;
+      // A canvas that acquired a context keeps that context's original attributes.
+      context?.getExtension('WEBGL_lose_context')?.loseContext();
+      const replacement=canvas.cloneNode(false);
+      canvas.replaceWith(replacement);
+      canvas=replacement;
+    }
+  }
+  throw lastError;
+}
+
+function makeEdgeFilter(renderer,allowFloat) {
   if (renderer.getContext().getContextAttributes()?.antialias) return null;
 
   const target=new THREE.WebGLRenderTarget(1,1,{
-    type:renderer.extensions.has('EXT_color_buffer_float') ? THREE.HalfFloatType : THREE.UnsignedByteType
+    type:allowFloat && renderer.extensions.has('EXT_color_buffer_float') ? THREE.HalfFloatType : THREE.UnsignedByteType
   });
   const uniforms={frame:{value:target.texture},texel:{value:new THREE.Vector2(1,1)}};
   const material=new THREE.ShaderMaterial({
@@ -73,16 +136,15 @@ function makeEdgeFilter(renderer) {
 }
 
 try {
-  const renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance',alpha:false});
+  const {renderer,context,profile}=createGraphics();
   renderer.setClearColor(0xa4b0b0);
-  renderer.outputColorSpace=THREE.SRGBColorSpace;
   renderer.toneMapping=THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure=1.04;
-  renderer.shadowMap.enabled=true;
-  renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  renderer.shadowMap.enabled=Boolean(profile.shadow);
+  renderer.shadowMap.type=profile.shadow>=1024?THREE.PCFSoftShadowMap:THREE.PCFShadowMap;
   renderer.shadowMap.autoUpdate=false;
   renderer.autoClear=false;
-  const edgeFilter=makeEdgeFilter(renderer);
+  const edgeFilter=profile.filter?makeEdgeFilter(renderer,!appleMobile):null;
 
   const scene=new THREE.Scene();
   scene.background=new THREE.Color(0xc6d7dd);
@@ -99,8 +161,8 @@ try {
   const sun=new THREE.DirectionalLight(0xffe5be,2.75);
   sun.position.set(20.5,7.2,-4.5);
   sun.target.position.set(7,0,6);
-  sun.castShadow=true;
-  sun.shadow.mapSize.set(touch?1536:2048,touch?1536:2048);
+  sun.castShadow=Boolean(profile.shadow);
+  if(sun.castShadow) sun.shadow.mapSize.set(profile.shadow,profile.shadow);
   sun.shadow.camera.left=-12;
   sun.shadow.camera.right=12;
   sun.shadow.camera.top=9;
@@ -134,7 +196,8 @@ try {
   let yaw=0,pitch=0,bob=0,stepPhase=0,foot=false,swing=-1,shake=0;
   let hits=0,broken=0,toastUntil=0,flashUntil=0,previous=performance.now(),aimTime=0;
   let targeted=null;
-  let viewportDirty=true;
+  let viewportDirty=true,graphicsLost=false;
+  let width=0,height=0,pixelRatio=0;
   const player=new THREE.Vector2();
   const eyeHeight=1.66;
   const speed=2.7;
@@ -151,20 +214,20 @@ try {
 
   function resize() {
     const w=canvas.clientWidth||window.innerWidth,h=canvas.clientHeight||window.innerHeight;
-    const pixels=Math.min(touch?1.5:1.7,devicePixelRatio||1);
-    renderer.setPixelRatio(pixels);
-    renderer.setSize(w,h,false);
+    const pixels=Math.min(profile.ratio,devicePixelRatio||1);
+    if(w===width && h===height && pixels===pixelRatio) return;
+    width=w;height=h;pixelRatio=pixels;
+    renderer.setDrawingBufferSize(w,h,pixels);
     edgeFilter?.resize();
     camera.aspect=w/h;
     camera.fov=layoutFov();
     camera.updateProjectionMatrix();
     effects.resize(h*pixels);
     hammer.resize(w/h);
-    viewportDirty=true;
   }
-  addEventListener('resize',resize);
-  window.visualViewport?.addEventListener('resize',resize);
-  resize();
+  function requestResize() {viewportDirty=true;}
+  addEventListener('resize',requestResize);
+  window.visualViewport?.addEventListener('resize',requestResize);
 
   function roomAt(x,z) {
     if(x<2.92&&z<4.80) return 'Balcony';
@@ -273,10 +336,16 @@ try {
   document.addEventListener('visibilitychange',()=>{if(document.hidden)pause();});
   canvas.addEventListener('contextmenu',e=>e.preventDefault());
   canvas.addEventListener('webglcontextlost',e=>{
-    e.preventDefault();pause();main.disabled=true;
-    error.hidden=false;error.textContent='Graphics stopped unexpectedly. Reload the page to continue.';
+    e.preventDefault();
+    graphicsLost=true;
+    pause();
+    showGraphicsError('The browser interrupted graphics. Try again with simpler settings.');
   });
-  canvas.addEventListener('webglcontextrestored',()=>location.reload());
+  canvas.addEventListener('webglcontextrestored',()=>{
+    graphicsLost=false;
+    renderer.shadowMap.needsUpdate=true;
+    requestResize();
+  });
 
   function look(dx,dy,sensitivity) {
     yaw-=dx*sensitivity;
@@ -381,8 +450,7 @@ try {
     requestAnimationFrame(render);
     const t=now*.001,dt=Math.min(.04,(now-previous)*.001);
     previous=now;
-    if(!playing&&!viewportDirty) return;
-    viewportDirty=false;
+    if(graphicsLost || (!playing&&!viewportDirty)) return;
     if(playing) {
       if(mouseLook==='free'&&edgeTurn) look(edgeTurn,0,dt*.83);
       movement.set(
@@ -420,6 +488,20 @@ try {
       }
       effects.update(dt);setLocation();
     }
+    try {
+      if(viewportDirty) resize();
+      viewportDirty=false;
+      draw(t,now);
+      if(retryGraphics && !context.isContextLost()) readyGraphics();
+    } catch(cause) {
+      console.error(cause);
+      graphicsLost=true;
+      pause();
+      showGraphicsError('The 3D scene stopped drawing. Try again with simpler graphics.');
+    }
+  }
+
+  function draw(t,now) {
     camera.position.set(player.x,eyeHeight+bob,player.y);
     camera.rotation.set(pitch+Math.sin(t*73)*shake,yaw+Math.sin(t*101)*shake*.39,bob*.12);
     camera.updateMatrixWorld();
@@ -434,12 +516,22 @@ try {
     edgeFilter?.present();
   }
   renderer.shadowMap.needsUpdate=true;
-  setLocation();setStats();requestAnimationFrame(render);
-  body.classList.remove('is-loading');
-  main.disabled=false;
+  setLocation();setStats();resize();
+  const firstFrame=performance.now();
+  try {
+    draw(firstFrame*.001,firstFrame);
+    if(context.isContextLost()) throw new GraphicsUnavailable('WebGL 2 was lost before the first frame.');
+    viewportDirty=false;
+    readyGraphics();
+  } catch(cause) {
+    console.error(cause);
+    graphicsLost=true;
+    showGraphicsError('The first frame could not load. Try again with simpler graphics.');
+  }
+  requestAnimationFrame(render);
 } catch (cause) {
   console.error(cause);
-  body.classList.remove('is-loading');
-  error.textContent='The 3D scene could not load. Enable WebGL 2 in your browser and reload the page.';
-  error.hidden=false;
+  showGraphicsError(cause instanceof GraphicsUnavailable
+    ? 'WebGL 2 could not start. Try again with simpler graphics, or update your browser.'
+    : 'The 3D scene could not load. Try again with simpler graphics.');
 }
